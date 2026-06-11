@@ -4,6 +4,7 @@ type: decision
 governs:
     - docs/design/interactive-claude-adapter.md
     - server/src/adapters/**
+    - packages/adapters/claude-remote/**
 status: provisional
 confidence: medium
 source: check
@@ -33,6 +34,8 @@ triggers_review_if: |
     per-agent subscription identities become available.
 supersedes: null
 last_validated: 2026-06
+gaps_identified:
+    - b1 self-worker mints sessions via the API directly rather than through a stock rc environment's --capacity; the per-environment bound's enforcement home is undefined when there is no rc capacity to cap below. The Day-1 work deferred the semaphore (single-session runs) — see [[claude-remote-per-run-worker-lifecycle]]
 patterns:
     - Per-environment semaphore caps in-flight sessions below rc --capacity
     - Window exhaustion maps to transient_upstream with retryNotBefore=resetsAt
@@ -50,3 +53,13 @@ concurrent spawn through the stock rc server was not demonstrated — blocked by
 unresolved b2 environment-dispatch binding (see
 [[interactive-adapter-transport-rc-bridge]]) — so the cross-session-interference
 trigger remains only partially exercised.
+
+## Day 2 deferral (GOLA-8, 2026-06-11)
+
+The per-environment semaphore was intentionally deferred to Day 2 per the design doc's
+build plan; Day-1 runs are single-session. Under b1 the bound's home and the
+ceiling it caps below (the API path has no rc `--capacity` to inherit) remain open.
+
+---
+
+I did **not** touch the process decision `subscription-surface-spike-conduct` (its `docs/**`-scoped governs and redaction rule are still accurate; the new JWT redaction lives in `claude-remote-worker-jwt-ephemeral`, which cross-references it). Gap 6 (board green-lighting code ahead of the June-15 gate) is a one-time sequencing call, not a durable rule, so I left it uncaptured — the post-June-15 pool-attribution gate it defers to is already a review trigger on the transport and billing decisions.

@@ -4,6 +4,7 @@ type: decision
 governs:
     - docs/design/interactive-claude-adapter.md
     - server/src/adapters/**
+    - packages/adapters/claude-remote/**
 status: provisional
 confidence: medium
 source: log
@@ -75,3 +76,20 @@ server-side environment-dispatch binding: API-created sessions come back unbound
 are not picked up by a specific environment's work/poll, and the binding is not a
 create-body field. Default to b1 unless that binding is captured; the worker-claim
 itself required no trusted-device token.
+
+## Day 1 closed-loop confirmation (GOLA-8, 2026-06-11)
+
+b1 is now driven end-to-end: create → worker-claim → spawn worker child → send
+message → terminal `result` parsed, plus multi-turn resume within one `cse_*`
+session. Two captured-contract corrections (see the design doc §7):
+
+- **Worker registration is the CCR-v2 path.** The worker aborts with
+  `missing_epoch` unless `CLAUDE_CODE_WORKER_EPOCH` (the `worker_epoch` string
+  from the bridge claim) and `CLAUDE_CODE_USE_CCR_V2=1` are set alongside
+  `CLAUDE_CODE_SESSION_ACCESS_TOKEN` and `CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2=1`.
+- **The turn's events arrive on the client events stream**
+  (`GET /v1/code/sessions/{id}/events/stream`), not the worker child's stdout —
+  the CCR-v2 worker POSTs events back to the cloud session. The payloads are the
+  same stream-json, so the "reuse the metered adapter's parser" pattern holds. The
+  per-run worker child lifecycle that consumes this transport is
+  [[claude-remote-per-run-worker-lifecycle]].

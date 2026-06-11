@@ -5,9 +5,16 @@ export { testEnvironment } from "./test.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
+  detectClaudeLoginRequired,
+  extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
   isClaudeUnknownSessionError,
+  isClaudeTransientUpstreamError,
+  isClaudePoisonedPreviousMessageIdError,
+  isClaudeImageProcessingError,
 } from "./parse.js";
+export { prepareClaudePromptBundle, type ClaudePromptBundle } from "./prompt-cache.js";
+export { resolveClaudeDesiredSkillNames } from "./skills.js";
 export {
   getQuotaWindows,
   readClaudeAuthStatus,
