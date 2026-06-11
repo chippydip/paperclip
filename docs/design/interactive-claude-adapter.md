@@ -3,7 +3,7 @@ title: "Design: Interactive Claude Adapter (subscription-billed sessions)"
 status: draft
 issue: GOLA-3
 date: 2026-06-10
-revised: 2026-06-11 # §3(c) Channels re-evaluated against the official docs after review feedback
+revised: 2026-06-11 # §6 Spike results (GOLA-5) appended; §3(c) Channels re-evaluated against the official docs after review feedback
 ---
 
 # Interactive Claude Adapter — Design
@@ -461,3 +461,131 @@ ships a documented sessions API.
 
 Recommended: **(b2) `claude_remote`**, gated on Spike #3 (billing verification) before
 any build effort beyond the spike.
+
+---
+
+## 6. Spike results (GOLA-5)
+
+Run on STARFORGE, 2026-06-11, against `claude.exe` v2.1.173 and the live rc-projects
+bridge (environment `env_01Cnkg…`, directory `C:\Users\cfbra\Projects`). All tokens,
+JWTs, and org/account/workspace UUIDs below are redacted to shapes — none are committed.
+
+**Recommendation: CONDITIONAL GO.** Transport viability is confirmed — the client
+session protocol was fully captured *and* exercised live with no official client, auth
+is subscription-OAuth as the design assumed, and the worker emits the same stream-json
++ `five_hour` rate-limit frames `claude_local` already parses. The build stays gated on
+the **one item that cannot pass before June 15**: the usage-dashboard confirmation that
+rc-driven turns draw from the subscription window, not the credit pool (§4 Spike #3).
+Do not green-light implementation until that passes.
+
+### Item 1 — client session API: CAPTURED (static analysis, no human action needed)
+
+The mobile/web client API the worker logs never showed is fully present as strings in
+the binary. The complete contract:
+
+| Call | Method + path | Body | Auth header builder |
+|---|---|---|---|
+| CreateSession | `POST {BASE_API_URL}/v1/code/sessions` | `{title, bridge:{}, tags?:[…], config:{cwd, model?, sources?, outcomes?, reuse_outcome_branches?}}` → `{session:{id:"cse_…", environment_kind:"bridge", status:"active", …}}` | `gVf`: `Authorization: Bearer <oauth>`, `anthropic-version`, `Content-Type`, `User-Agent` |
+| SendMessage | `POST /v1/code/sessions/{id}/events` | `{events:[{payload:{type:"user", message:{role:"user", content:[…]}, priority:"next"}}]}` | `wD`: `Authorization: Bearer <oauth>`, `anthropic-version: 2023-06-01`, `anthropic-client-platform` |
+| Read events | `GET /v1/code/sessions/{id}/events` (SSE: `/events/stream`) | — | `wD` |
+| Worker-claim | `POST /v1/code/sessions/{id}/bridge` | `{}` (optional `X-Trusted-Device-Token`) → `{worker_jwt, worker_epoch, api_base_url, expires_in:14400}` | `gVf` |
+| Archive / title / read-state / presence | `POST /{id}/archive`, `PUT /{id}` `{title}`, `POST /{id}/mark_read`, `POST /{id}/client/presence` | — | `wD`/`gVf` |
+
+Worker child the rc server spawns: `claude --print --sdk-url …/v1/code/sessions/{id}
+--session-id {id} --input-format stream-json --output-format stream-json
+--replay-user-messages --permission-mode bypassPermissions`, with the worker token
+passed via env **`CLAUDE_CODE_SESSION_ACCESS_TOKEN`** (plus
+`CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2=1`; CCR-v2 adds `CLAUDE_CODE_USE_CCR_V2=1` and
+`CLAUDE_CODE_WORKER_EPOCH`).
+
+**Auth (decisive).** Cloud/code sessions *require* the first-party Anthropic OAuth login
+(claude.ai account). `ib()` throws `"Cloud sessions are only available on the
+first-party Anthropic API provider"` and `"API key authentication is not sufficient.
+Please run /login"`. The token is the `sk-ant-oat01…` OAuth access token from
+`~/.claude/.credentials.json` (`claudeAiOauth.accessToken`), scope
+`user:sessions:claude_code`. Therefore: a `claude setup-token` OAuth token (same scope)
+works; a raw `ANTHROPIC_API_KEY` does **not**. The probed account reports
+`subscriptionType=max`, `rateLimitTier=default_claude_max_5x` (note: *5x* tier label,
+not 20x — worth confirming against the plan).
+
+### Item 2 — curl replay: PROTOCOL DRIVEN END-TO-END, no official client
+
+Each link exercised live via raw HTTP (`Invoke-RestMethod`), no Anthropic client:
+CreateSession → **200** (returned a `cse_…` bridge session); `/bridge` worker-claim →
+**200** (minted a real worker JWT, role `worker`, scoped to the session, 4h TTL); a
+worker child spawned with that JWT → **connected to the cloud session over SSE and
+registered in ~113 ms** (`worker registered` → `starting_query_loop`); SendMessage
+`POST /events` → **200**. This proves no official client is required to create, claim,
+attach, and message a bridge session.
+
+The single closed-loop turn (driven message → `result` event) was **not** captured by
+the spike because a bare `--print` worker exits on stdin-EOF before the cloud message is
+delivered; keeping the child's stdin open is a worker-supervisor *build* concern (Day 1),
+explicitly out of spike scope. The stock rc server keeps its children alive correctly —
+demonstrated by every transcript cited under Item 3.
+
+### Item 3 — billing signals: NOW-PORTION PASSES; dashboard gate DEFERRED (GO/NO-GO)
+
+Existing rc bridge transcripts (`%TEMP%/bridge-transcript-cse_*.jsonl`) carry
+`rate_limit_event` frames with `rateLimitType:"five_hour"`, `resetsAt`, `overageStatus`
+— machine-readable proof rc turns draw from the **subscription 5-hour window**. `result`
+events carry `total_cost_usd` and full `usage` (e.g. one session: two results,
+`num_turns` 8 then 6, `total_cost_usd` 6.90 then 8.63). **The GO/NO-GO gate is the
+post-June-15 usage-dashboard confirmation that these turns hit the subscription window
+and not the credit pool — it cannot be verified before June 15.**
+
+### Item 4 — multi-turn resume: PASSES
+
+Transcript `cse_01RGam…` carries 16 user-message frames and **two distinct `result`
+events**; the rc log shows the same `cse_01RGam…` work item re-queued hours later
+(`started_at` 02:43 vs original 22:48). Context carries across turns within one `cse`
+session — exactly the `agent_task_sessions` resume model the adapter needs.
+
+### Item 5 — concurrency: PARTIAL (capacity configured; full dual-spawn blocked by Item 7 below)
+
+The rc server registers `max_sessions: 32`. Two sessions created simultaneously via the
+API both returned `status:active`. A full two-worker concurrent spawn *through the stock
+rc server* was not demonstrated, blocked by the dispatch-binding gap below. Protocol-level
+concurrency is supported; a per-environment semaphore (as designed) remains the right cap.
+
+### Item 6 — channels billing probe: DEFERRED (bundled with the June-15 gate)
+
+`--channels` / `--dangerously-load-development-channels` / `claude/channel` are all
+present in v2.1.173, so channels is real. But a conclusive pool-attribution probe needs
+the post-June-15 split — before June 15 both `-p` and interactive draw from subscription,
+so the probe cannot distinguish pools today — and it needs a channel plugin (fakechat →
+Bun + plugin) stood up. Deferred to the June-15 pass. **Today-signal to capture then:
+does a channels-hosted `-p` session emit `five_hour` frames?** If yes → loud flag,
+reopens approach (c) per `decisions/interactive-adapter-transport-rc-bridge.md`.
+
+### Item 7 — `claude agents`: documented API exists, but it is a DIFFERENT surface
+
+There is a documented session-creation API — the **managed-agents platform API**:
+`POST /v1/sessions {agent, environment_id, vault_ids, resources, title}`,
+`GET /v1/sessions`, `/v1/agents`, `/v1/environments`, behind
+`anthropic-beta: managed-agents-2026-04-01`. It runs in **Anthropic-hosted** environments
+(vaults/resources), not the local-workspace bridge, and does **not** share the rc
+`/v1/code/sessions` create path. So it does not lower the rc adapter's API-drift risk —
+it confirms the §3(d) call that `claude agents` is a separate execution environment.
+
+### One residual unknown → the single human action to capture
+
+Sessions created via raw `POST /v1/code/sessions` (both `bridge:{}` and
+`bridge:{environment_id}`) come back with `environment_id:""` and are **not** picked up
+by the stock rc server's per-environment `work/poll`. So the mechanism that dispatches an
+API-created session into a *specific* bridge environment's work queue is assigned
+server-side, not via any create-body field found in the binary. The worker-claim
+(`/bridge`) did **not** require a trusted-device token, so any gate is on *dispatch*, not
+*claim*. This affects only the **b2** "stock rc server is the worker" convenience; **b1**
+"paperclip runs its own worker" is unaffected and was shown viable (the self-minted JWT
+connected). Capture is one human action: tap **New session** on the STARFORGE Projects
+environment from the enrolled phone; the bound session object (and the resulting
+`work/poll` item, which already shows a populated `environment_id`) reveals the binding by
+diff against the unbound spike sessions. This is the one item to ask Chip for.
+
+### Build-time items (Day 1) and risk delta
+
+- **Environment-dispatch binding** for b2, or default to **b1** self-worker (proven viable).
+- **Worker-child stdio lifecycle** (keep stdin open / supervise the child).
+- API-drift risk unchanged at **medium**; `claude_local` fallback + b1 fallback both stand.
+- All parsing/error-taxonomy reuse from `claude_local` holds (output is identical stream-json).

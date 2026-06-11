@@ -40,3 +40,13 @@ antipatterns:
     - Host-wide serialization of all subscription-billed turns
     - Creating sessions without checking environment capacity or window state
 ---
+
+## Spike validation (GOLA-5, 2026-06-11)
+
+The rc server registers `max_sessions: 32`, confirming the `--capacity` multiplexing
+premise and the default the semaphore caps below. Two sessions created simultaneously
+both returned `status:active` with no observed interference. A full two-worker
+concurrent spawn through the stock rc server was not demonstrated — blocked by the
+unresolved b2 environment-dispatch binding (see
+[[interactive-adapter-transport-rc-bridge]]) — so the cross-session-interference
+trigger remains only partially exercised.

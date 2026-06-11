@@ -36,10 +36,13 @@ alternatives_rejected:
       reason: Inherits the host session's billing surface (no subscription-billed headless host exists); no session lifecycle or protocol-level result/usage contract (unacknowledged notifications, prompt-enforced replies, wake batching); custom channels require a development flag during the preview.
     - option: ACP (acpx)
       reason: Routes through the SDK/headless surface, which bills the metered credit pool — does not achieve subscription billing.
+    - option: Managed-agents platform API (`claude agents`)
+      reason: A documented session API, but a separate Anthropic-hosted execution surface (vaults/resources) on a different create path — it does not drive the local-workspace bridge or lower the bridge's API-drift risk.
 triggers_review_if: |
-    The mobile-app client API spike (create/send-message shape) fails or the API
-    changes incompatibly; ToS sign-off for automating the interactive surface is
-    withheld; upstream changes how billing is classified at session ingress;
+    The captured client session API changes incompatibly; ToS sign-off for
+    automating the interactive surface is withheld; upstream changes how billing is
+    classified at session ingress; the post-June-15 usage dashboard shows rc-driven
+    turns bill to the metered credit pool rather than the subscription window;
     Channels graduate from research preview with a stable custom-channel path, or
     the spike probe shows a channels-hosted -p session bills to the subscription
     window.
@@ -49,9 +52,26 @@ patterns:
     - Adapter attaches to a remote-control-created cloud session (cse_*) for billing ingress
     - Worker child spawned headless with stream-json input/output
     - Reuses the metered adapter's stream-json parsing rather than a new parser
-    - A per-workspace supervisor owns and reuses the remote-control child across restarts
+    - A per-workspace supervisor owns the worker child (self-run or reused rc child) across restarts
 antipatterns:
     - Scraping ANSI/TUI output from a pseudo-terminal
     - Expecting a channel/MCP push surface to change the host session's billing classification
     - Treating TTY attachment as the billing signal
+    - Routing through the managed-agents platform API and assuming it drives the local-workspace bridge
 ---
+
+## Spike validation (GOLA-5, 2026-06-11)
+
+The client session protocol was captured from the binary and driven end-to-end
+with raw HTTP (no official client): create → worker-claim → attach over SSE →
+message all returned success. Transport viability is confirmed; the build stays a
+**conditional GO** behind the post-June-15 pool-attribution gate (see
+[[subscription-billing-cost-representation]]).
+
+**Worker ownership (b1 vs b2).** Paperclip running its own headless worker (b1) is
+proven viable — a self-minted worker token connected to the cloud session. Reusing
+the stock remote-control server's worker (b2) additionally needs an undocumented,
+server-side environment-dispatch binding: API-created sessions come back unbound and
+are not picked up by a specific environment's work/poll, and the binding is not a
+create-body field. Default to b1 unless that binding is captured; the worker-claim
+itself required no trusted-device token.
