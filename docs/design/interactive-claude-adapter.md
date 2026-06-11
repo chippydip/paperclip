@@ -3,6 +3,7 @@ title: "Design: Interactive Claude Adapter (subscription-billed sessions)"
 status: draft
 issue: GOLA-3
 date: 2026-06-10
+revised: 2026-06-11 # §3(c) Channels re-evaluated against the official docs after review feedback
 ---
 
 # Interactive Claude Adapter — Design
@@ -195,25 +196,96 @@ sub-shapes:
   operation, and the Max plan explicitly covers heavy personal/team use through its
   5h/7d windows. Accept and keep `claude_local` as a degradation path.
 
-### (c) Claude Code "Channels" / MCP plugins as a control surface
+### (c) Claude Code Channels (research preview) as a control surface
 
-Investigated against the installed binary (v2.1.172): **there is no `channels`
-subcommand or channel plugin surface in this build** (`claude --help` lists agents,
-auth, mcp, plugin, project, ...). What MCP actually offers is tools *inside* a session
-— an MCP server cannot start a turn; something still has to send the user message.
+> **Revision note (2026-06-11):** the first version of this section wrongly concluded
+> the surface didn't exist because v2.1.172 has no `channels` subcommand. Channels is
+> real — it's enabled per session via `claude --channels`, not a subcommand. This
+> evaluation is based on the official docs:
+> [channels](https://code.claude.com/docs/en/channels) and the
+> [channels reference](https://code.claude.com/docs/en/channels-reference).
 
-The realizable version of this idea is a **"resident agent"**: keep one interactive
-session alive (terminal or rc spawn, subscription-billed) running a `/loop`-style skill
-that polls paperclip's API for work and posts results back via MCP/CLI.
+**What it actually is.** A channel is an MCP server that Claude Code spawns over
+stdio, which declares `capabilities.experimental['claude/channel']` and **pushes
+events into an already-running session** via `notifications/claude/channel`. Events
+arrive in context as `<channel source="...">` tags and queue in order. Two-way
+channels expose ordinary MCP tools (e.g. `reply`) the model calls to respond, and a
+`claude/channel/permission` capability relays permission prompts for remote
+approve/deny. Official plugins in the preview: Telegram, Discord, iMessage, fakechat.
+Custom channels are documented (a webhook receiver is ~60 lines): a **paperclip
+channel** would listen on localhost, receive heartbeat wakes as POSTs, forward them
+into the session, and expose a structured `report_result` tool for the agent to post
+results back. It is, as the review feedback noted, purpose-built for OpenClaw-style
+chat-app integrations and asynchronous event ingestion.
 
-- **Pros:** no private APIs at all; trivially subscription-billed; could ship today.
-- **Cons:** inverts the control model — paperclip can't start/stop/time-box runs, no
-  per-run `AdapterExecutionResult`, no per-run usage attribution (one ever-growing
-  session, context compaction destroys auditability), failure recovery is "human
-  restarts the loop", and a wedged loop silently stalls the whole agent. It bypasses
-  heartbeat scheduling, budget enforcement, and session bookkeeping entirely.
-- **Verdict: reject as the adapter**, but note it's a legitimate manual stopgap for
-  June 15 while (b) is built.
+**How an adapter on channels would look:** one long-lived host `claude` session per
+agent (or per task) started with `--channels` (a custom channel needs
+`--dangerously-load-development-channels server:paperclip` for the duration of the
+research preview); paperclip pushes each wake as a channel event; results return via
+the `report_result` tool call, whose input schema doubles as the structured result
+contract.
+
+- **Pros (genuine):**
+  - Fully documented public contract — the only option with **zero private API**.
+  - Two-way tool path makes structured result capture possible (tool input schema =
+    result schema) — categorically better than TUI scraping.
+  - Permission relay, sender allowlists, ordered event queueing, channel
+    `instructions` injected into the system prompt (a natural home for the paperclip
+    protocol contract).
+  - Windows-friendly: the channel is a stdio MCP subprocess on any Node-compatible
+    runtime (Bun is only required by the official plugins, not custom ones).
+- **Cons (why it fails as the orchestration transport today):**
+  1. **Channels don't change the billing surface — they inherit the host session's.**
+     A channel pushes events into a session that already exists; the
+     subscription-vs-credit-pool split is decided by how that host runs. The two host
+     options: (i) `claude -p --channels ...` is documented (terminal-input tools are
+     auto-disabled) — but `-p` *is* the headless `--print` surface that moves to the
+     credit pool on June 15, so nothing is gained unless Anthropic classifies
+     channel-hosted `-p` sessions differently (unverified — Spike #6); (ii) a real
+     interactive TUI session kept alive 24/7 ("run Claude in a background process or
+     persistent terminal", per the docs) is subscription-billed but reimports the
+     keep-a-TUI-alive half of option (a) — on Windows, a persistent hidden
+     terminal/ConPTY host per agent — minus the scraping, since results flow through
+     the tool path.
+  2. **No session lifecycle management.** Channels cannot start, stop, target, or
+     enumerate sessions — something must already be running `claude --channels`.
+     Per-(agent, task) isolation would mean paperclip building its own host-session
+     supervisor (the part the rc work queue already does, cloud-managed); one
+     session per agent means every task shares one ever-compacting context, breaking
+     the `(agentId, taskKey)` session model and per-run auditability.
+  3. **No protocol-level turn/result contract.** Notifications are unacknowledged
+     ("resolves when the message is written to the transport, not when Claude has
+     processed it") and are *dropped silently* if the channel isn't registered or org
+     policy blocks it; result delivery depends on the model choosing to call
+     `report_result` (prompt-enforced, not protocol-enforced); there is no usage/cost
+     surface at all — token capture would fall back to scraping the host session's
+     on-disk `.jsonl`. Queued wakes are explicitly **batched onto the next turn and
+     "handled as a group"**, which breaks one-wake-one-run accounting and timeout
+     attribution.
+  4. **Research preview instability.** The docs state the `--channels` flag syntax
+     and protocol contract "may change based on feedback". Custom channels stay
+     behind `--dangerously-load-development-channels` for the duration of the preview
+     (the allowlist is Anthropic-curated; the community marketplace is excluded; org
+     allowlists only exist on Team/Enterprise managed settings — not on a personal
+     Max plan). Production orchestration gated on a flag named "dangerously … 
+     development" is the wrong foundation this quarter.
+- **Billing/ToS:** the *lowest* classification risk of all options when the host is a
+  genuine interactive terminal session — documented feature, official plugin model,
+  no impersonation of another client. The risk concentrates in host-session keepalive
+  and preview churn, not in ToS.
+- **Verdict: not the adapter transport today — but the strongest candidate to
+  revisit, and immediately useful in a complementary role.** Concretely:
+  - **Chat-ops bridge (separate ticket):** Discord/Telegram channel + permission
+    relay for steering live sessions from chat — the OpenClaw-style use it was built
+    for; orthogonal to this adapter.
+  - **Revisit triggers** (recorded in `decisions/interactive-adapter-transport-rc-bridge.md`):
+    Spike #6 shows a channels-hosted `-p` session bills to subscription, or channels
+    graduate from research preview with a stable custom-channel path. Cons 2–3
+    (lifecycle + result contract) would still need solving, but the calculus changes
+    materially.
+  - The "resident agent" stopgap (a manually-started live session polling paperclip
+    via a loop skill) is subsumed by this option: a channels-fed resident session is
+    its cleaner form, with the same orchestration-contract weaknesses.
 
 ### (d) What the codebase already has
 
@@ -333,7 +405,13 @@ per session (v1). Consequences, documented as a known limitation:
 4. **Multi-turn resume**: send a second message to the same cse session; confirm
    context carries and a second `result` event arrives.
 5. **Concurrency**: two sessions in one environment; confirm both spawn.
-6. **Quick check**: does `claude agents` expose any *documented* equivalent (it would
+6. **Channels billing probe** (cheap, in parallel): run a channels-hosted session —
+   interactive + `--channels` with the fakechat demo, and the same with `-p` — drive
+   one turn through each, and check which pool each draws from (usage dashboard /
+   rate-limit surface). If a channels-hosted `-p` session bills to **subscription**,
+   flag for design revisit: approach (c) becomes a viable zero-private-API transport
+   (its lifecycle/result-contract gaps notwithstanding).
+7. **Quick check**: does `claude agents` expose any *documented* equivalent (it would
    lower API-drift risk if so).
 
 ### Build plan (~2 agent-days after spike)
@@ -378,7 +456,7 @@ ships a documented sessions API.
 |---|---|---|---|---|---|
 | (a) ConPTY TUI scripting | none (scraping) | subscription | none (no API) | extreme (TUI churn, node-pty) | reject |
 | (b) remote-control client | full stream-json | subscription (evidenced by `five_hour` rate-limit frames) | medium (private API) | low (reuses claude-local parsing) | **recommend** |
-| (c) Channels MCP / resident agent | n/a (no such surface in v2.1.172) | subscription | n/a | n/a as adapter | reject (manual stopgap only) |
+| (c) Channels (research preview) | partial (structured via `report_result` tool, prompt-enforced; no usage/cost surface) | inherits host session: subscription only with a persistent interactive host; `-p` host presumed credit pool (Spike #6) | none (documented) but preview contract may change; custom channels behind a dev flag | medium (host keepalive, no session lifecycle, preview churn) | not now — complementary (chat-ops); revisit on Spike #6 / preview graduation |
 | (d) acpx | full | **credit pool** (SDK surface) | low | low | doesn't solve the problem |
 
 Recommended: **(b2) `claude_remote`**, gated on Spike #3 (billing verification) before
