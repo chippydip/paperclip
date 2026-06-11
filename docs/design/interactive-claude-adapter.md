@@ -589,3 +589,40 @@ diff against the unbound spike sessions. This is the one item to ask Chip for.
 - **Worker-child stdio lifecycle** (keep stdin open / supervise the child).
 - API-drift risk unchanged at **medium**; `claude_local` fallback + b1 fallback both stand.
 - All parsing/error-taxonomy reuse from `claude_local` holds (output is identical stream-json).
+
+## 7. GOLA-8 closed-loop result (Day 1 adapter core)
+
+Run on STARFORGE, 2026-06-11, against `claude.exe` v2.1.173. The
+`packages/adapters/claude-remote` adapter closed the loop the spike left open.
+All three Day-1 acceptance criteria passed live:
+
+1. **Closed-loop turn** — create → worker-claim → spawn b1 worker child → send
+   user message → terminal `result` parsed (`result:"pong"`, `total_cost_usd`,
+   `usage`, `num_turns:1`). The b1 self-worker is fully viable end-to-end.
+2. **`rate_limit_event` capture** — `rateLimitType:"five_hour"`, `resetsAt`,
+   `status` captured per turn and recorded into quota bookkeeping.
+3. **Multi-turn resume** — a second message into the same `cse_*` session
+   returned a second `result` with context carried; `execute()`'s
+   `sessionParams` round-trip (`{cseSessionId, cwd, promptBundleKey}`) resumes
+   the same session id.
+
+**Two corrections to the §6 captured contract**, found by driving the worker live:
+
+- **Worker registration is the CCR-v2 path.** A worker spawned with only
+  `CLAUDE_CODE_SESSION_ACCESS_TOKEN` + `CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2=1`
+  aborts with `worker registration failed (missing_epoch)`. It additionally
+  requires `CLAUDE_CODE_WORKER_EPOCH` (the `worker_epoch` from the bridge claim —
+  a **string**, observed as `"1"`, not the number §6 implied) and
+  `CLAUDE_CODE_USE_CCR_V2=1`.
+- **Result channel is the *client* events stream, not the worker child stdout.**
+  Under CCR-v2 the worker POSTs assistant/result/`rate_limit_event` events back
+  to the cloud session; its own stdout is startup diagnostics only. The adapter
+  reads the turn from `GET /v1/code/sessions/{id}/events/stream`. The payloads are
+  identical stream-json, so `parseClaudeStreamJson` is reused verbatim — the §3
+  "structured output identical to `claude_local`" claim holds, just on a
+  different transport leg than §6 assumed. (The `bridge-transcript-*.jsonl` the
+  spike read is the stock rc server mirroring those same session events to disk.)
+
+Deferred to Day 2 (unchanged from the §4 build plan): registry registration,
+per-environment concurrency semaphore, teardown polish, docs page, the
+post-June-15 pool-attribution gate (still the GO/NO-GO before fleet rollout).

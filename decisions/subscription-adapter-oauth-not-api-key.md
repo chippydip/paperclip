@@ -4,6 +4,7 @@ type: decision
 governs:
     - docs/design/interactive-claude-adapter.md
     - server/src/adapters/**
+    - packages/adapters/claude-remote/**
 status: current
 confidence: high
 source: check

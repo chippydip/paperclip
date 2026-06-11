@@ -4,6 +4,7 @@ type: decision
 governs:
     - docs/design/interactive-claude-adapter.md
     - server/src/adapters/**
+    - packages/adapters/claude-remote/**
 status: current
 confidence: high
 source: log
@@ -45,3 +46,6 @@ antipatterns:
     - Long-lived session lifecycle that ignores the (agentId, taskKey) resume key
     - Dropping or swallowing clearSession on a poisoned-session error
 ---
+
+The remote adapter's session rotate is the (agentId, taskKey)-keyed instantiation of
+this contract's resume model — see [[claude-remote-session-rotate-not-a-state]].

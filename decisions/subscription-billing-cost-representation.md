@@ -4,6 +4,7 @@ type: decision
 governs:
     - docs/design/interactive-claude-adapter.md
     - server/src/adapters/**
+    - packages/adapters/claude-remote/**
 status: provisional
 confidence: medium
 source: log
@@ -57,3 +58,7 @@ is present to record informationally. The one thing the now-portion cannot prove
 pool attribution: before June 15 both headless and interactive draw from the
 subscription window, so the GO/NO-GO that rc turns hit the subscription window (not
 the credit pool) is gated on the post-June-15 usage dashboard.
+
+GOLA-8 Day 1 (2026-06-11) confirmed live capture: each turn's `rate_limit_event`
+(`rateLimitType:"five_hour"`, `resetsAt`, `status`) and `result.total_cost_usd` were
+parsed and recorded into quota bookkeeping through the b1 closed loop.
